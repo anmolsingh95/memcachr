@@ -6,16 +6,23 @@ use std::str;
 // request handlers
 fn handle_set_request(
     request: SetRequest,
-    cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+    cache: &mut HashMap<Vec<u8>, SetRequest>,
+    mut stream: TcpStream,
 ) -> std::io::Result<()> {
     log_info("inside set request handler");
-    cache.insert(request.key, request.data);
+    let noreply = request.noreply;
+    cache.insert(request.key.clone(), request);
+    if noreply {
+        return Ok(());
+    } else {
+        stream.write_all("STORED\r\n".as_bytes()).unwrap();
+    }
     Ok(())
 }
 
 fn handle_get_request(
     request: GetRequest,
-    cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+    cache: &mut HashMap<Vec<u8>, SetRequest>,
     mut stream: TcpStream,
 ) -> std::io::Result<()> {
     log_info("inside get request handler");
@@ -23,14 +30,15 @@ fn handle_get_request(
         stream
             .write_all(
                 format!(
-                    "VALUE {key} 0 {bytes}\r\n",
+                    "VALUE {key} {flags} {bytes}\r\n",
                     key = str::from_utf8(&request.key).unwrap(),
-                    bytes = value.len()
+                    flags = value.flags,
+                    bytes = value.bytes,
                 )
                 .as_bytes(),
             )
             .unwrap();
-        stream.write_all(value).unwrap();
+        stream.write_all(&value.data).unwrap();
         stream.write_all(b"\r\n").unwrap();
         send_end(stream);
     } else {
@@ -60,8 +68,8 @@ struct GetRequest {
 struct SetRequest {
     key: Vec<u8>,
     flags: u32,
-    bytes: Vec<u8>,
     ttl: u32,
+    bytes: u32,
     noreply: bool,
     data: Vec<u8>,
 }
@@ -91,14 +99,14 @@ fn parse_request(stream: &mut TcpStream) -> Request {
             let key = iter.next().unwrap();
             let flags = iter.next().unwrap().parse().unwrap();
             let ttl = iter.next().unwrap().parse().unwrap();
-            let bytes = iter.next().unwrap();
+            let bytes = iter.next().unwrap().parse().unwrap();
             let noreply = iter.next().unwrap_or("false") == "noreply";
             let mut data_block = String::new();
             reader.read_line(&mut data_block).unwrap();
             return Request::Set(SetRequest {
                 key: key.as_bytes().to_vec(),
                 flags,
-                bytes: bytes.as_bytes().to_vec(),
+                bytes,
                 ttl,
                 noreply,
                 data: data_block.as_bytes().to_vec(),
@@ -110,7 +118,7 @@ fn parse_request(stream: &mut TcpStream) -> Request {
 
 fn handle_connection(
     mut stream: TcpStream,
-    cache: &mut HashMap<Vec<u8>, Vec<u8>>,
+    cache: &mut HashMap<Vec<u8>, SetRequest>,
 ) -> std::io::Result<()> {
     let peer_addr = stream.peer_addr().unwrap();
     log_info(&format!("handling tcpstream from {peer_addr}"));
@@ -118,7 +126,7 @@ fn handle_connection(
     log_info(&format!("received request: {request:?}"));
     match request {
         Request::Get(get_request) => handle_get_request(get_request, cache, stream),
-        Request::Set(set_request) => handle_set_request(set_request, cache),
+        Request::Set(set_request) => handle_set_request(set_request, cache, stream),
         Request::Unknown => handle_unknown_request(stream),
     }
     .unwrap();
@@ -130,7 +138,7 @@ fn main() -> std::io::Result<()> {
     let local_addr = listener.local_addr().unwrap();
     log_info(&format!("memcachr listening at {local_addr}"));
 
-    let mut cache: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+    let mut cache: HashMap<Vec<u8>, SetRequest> = HashMap::new();
     // accept connections and process them serially
     for stream in listener.incoming() {
         handle_connection(stream.unwrap(), &mut cache).unwrap();
