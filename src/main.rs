@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::str;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // request handlers
 fn handle_set_request(
@@ -26,7 +27,18 @@ fn handle_get_request(
     mut stream: TcpStream,
 ) -> std::io::Result<()> {
     log_info("inside get request handler");
+    let now = SystemTime::now();
+    let unix_time = now
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs();
+
     if let Some(value) = cache.get(&request.key) {
+        if value.ttl != 0 && value.request_time + value.ttl < unix_time {
+            cache.remove(&request.key);
+            send_end(stream);
+            return Ok(());
+        }
         stream
             .write_all(
                 format!(
@@ -68,10 +80,11 @@ struct GetRequest {
 struct SetRequest {
     key: Vec<u8>,
     flags: u32,
-    ttl: u32,
+    ttl: u64,
     bytes: u32,
     noreply: bool,
     data: Vec<u8>,
+    request_time: u64,
 }
 
 #[derive(Debug)]
@@ -82,6 +95,12 @@ enum Request {
 }
 
 fn parse_request(stream: &mut TcpStream) -> Request {
+    let now = SystemTime::now();
+    let unix_time = now
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs();
+
     let mut reader = BufReader::new(stream);
     let mut command_line = String::new();
     reader.read_line(&mut command_line).unwrap();
@@ -110,6 +129,7 @@ fn parse_request(stream: &mut TcpStream) -> Request {
                 ttl,
                 noreply,
                 data: data_block.as_bytes().to_vec(),
+                request_time: unix_time,
             });
         }
         _ => Request::Unknown,
