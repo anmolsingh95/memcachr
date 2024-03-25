@@ -39,20 +39,18 @@ fn handle_get_request(
             send_end(stream);
             return Ok(());
         }
-        stream
-            .write_all(
-                format!(
-                    "VALUE {key} {flags} {bytes}\r\n",
-                    key = str::from_utf8(&request.key).unwrap(),
-                    flags = value.flags,
-                    bytes = value.bytes,
-                )
-                .as_bytes(),
-            )
-            .unwrap();
-        stream.write_all(&value.data).unwrap();
-        stream.write_all(b"\r\n").unwrap();
-        send_end(stream);
+        let response_doc = format!(
+            "VALUE {key} {flags} {bytes}\r\n",
+            key = str::from_utf8(&request.key).unwrap(),
+            flags = value.flags,
+            bytes = value.bytes
+        ) + format!(
+            "{data}\r\n",
+            data = str::from_utf8(&value.data).unwrap()
+        )
+        .as_str()
+            + "END.\n";
+        stream.write_all(response_doc.as_bytes()).unwrap();
     } else {
         send_end(stream);
     }
@@ -67,7 +65,7 @@ fn handle_unknown_request(stream: TcpStream) -> std::io::Result<()> {
 }
 
 fn send_end(mut stream: TcpStream) {
-    stream.write_all("END\r\n".as_bytes()).unwrap();
+    stream.write_all("END".as_bytes()).unwrap();
 }
 
 // Parsing request
@@ -128,7 +126,7 @@ fn parse_request(stream: &mut TcpStream) -> Request {
                 bytes,
                 ttl,
                 noreply,
-                data: data_block.as_bytes().to_vec(),
+                data: data_block.trim().as_bytes().to_vec(),
                 request_time: unix_time,
             });
         }
