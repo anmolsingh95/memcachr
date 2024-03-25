@@ -20,6 +20,7 @@ fn handle_set_request(
         return Ok(());
     } else {
         stream.write_all("STORED\r\n".as_bytes()).unwrap();
+        stream.flush().unwrap();
     }
     Ok(())
 }
@@ -55,6 +56,7 @@ fn handle_get_request(
         .as_str()
             + "END\r\n";
         stream.write_all(response_doc.as_bytes()).unwrap();
+        stream.flush().unwrap();
     } else {
         send_end(stream);
     }
@@ -70,6 +72,7 @@ fn handle_unknown_request(stream: &mut TcpStream) -> std::io::Result<()> {
 
 fn send_end(stream: &mut TcpStream) {
     stream.write_all("END\r\n".as_bytes()).unwrap();
+    stream.flush().unwrap();
 }
 
 // Parsing request
@@ -152,6 +155,7 @@ fn handle_request(request: Request, stream: &mut TcpStream, cache: &mut Cache) {
         Request::Unknown => handle_unknown_request(stream),
     }
     .unwrap();
+    log_info("finished handling last request");
 }
 
 fn handle_connection(
@@ -161,6 +165,7 @@ fn handle_connection(
     let peer_addr = stream.peer_addr().unwrap();
     log_info(&format!("inbound connection from {peer_addr}"));
     loop {
+        log_info(&format!("waiting for next request from {peer_addr}"));
         let request = parse_request(&mut stream);
         match request {
             Ok(request) => {
@@ -169,6 +174,7 @@ fn handle_connection(
             Err(_) => {
                 log_info(&format!("sending error to {peer_addr}"));
                 stream.write_all("ERROR\r\n".as_bytes()).unwrap();
+                stream.flush().unwrap();
                 break;
             }
         }
