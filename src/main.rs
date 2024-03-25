@@ -145,8 +145,12 @@ fn handle_connection(
     let request = parse_request(&mut stream);
     log_info(&format!("received request: {request:?}"));
     match request {
-        Request::Get(get_request) => handle_get_request(get_request, cache, stream),
-        Request::Set(set_request) => handle_set_request(set_request, cache, stream),
+        Request::Get(get_request) => {
+            handle_get_request(get_request, cache, stream)
+        }
+        Request::Set(set_request) => {
+            handle_set_request(set_request, cache, stream)
+        }
         Request::Unknown => handle_unknown_request(stream),
     }
     .unwrap();
