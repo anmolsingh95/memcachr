@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::str;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // request handlers
 fn handle_set_request(
     request: SetRequest,
-    stream: &mut TcpStream,
+    writer: &mut BufWriter<&TcpStream>,
     cache: &mut Cache,
 ) -> std::io::Result<()> {
     log_info("inside set request handler");
@@ -19,15 +19,15 @@ fn handle_set_request(
     if noreply {
         return Ok(());
     } else {
-        stream.write_all("STORED\r\n".as_bytes()).unwrap();
-        stream.flush().unwrap();
+        writer.write_all("STORED\r\n".as_bytes()).unwrap();
+        writer.flush().unwrap();
     }
     Ok(())
 }
 
 fn handle_get_request(
     request: GetRequest,
-    stream: &mut TcpStream,
+    writer: &mut BufWriter<&TcpStream>,
     cache: &mut Cache,
 ) -> std::io::Result<()> {
     log_info("inside get request handler");
@@ -41,7 +41,7 @@ fn handle_get_request(
     if let Some(value) = cache.get(&request.key) {
         if value.ttl != 0 && value.request_time + value.ttl < unix_time {
             cache.remove(&request.key);
-            send_end(stream);
+            send_end(writer);
             return Ok(());
         }
         let response_doc = format!(
@@ -55,24 +55,26 @@ fn handle_get_request(
         )
         .as_str()
             + "END\r\n";
-        stream.write_all(response_doc.as_bytes()).unwrap();
-        stream.flush().unwrap();
+        writer.write_all(response_doc.as_bytes()).unwrap();
+        writer.flush().unwrap();
     } else {
-        send_end(stream);
+        send_end(writer);
     }
 
     Ok(())
 }
 
-fn handle_unknown_request(stream: &mut TcpStream) -> std::io::Result<()> {
+fn handle_unknown_request(
+    writer: &mut BufWriter<&TcpStream>,
+) -> std::io::Result<()> {
     log_info("inside unknown request handler");
-    send_end(stream);
+    send_end(writer);
     Ok(())
 }
 
-fn send_end(stream: &mut TcpStream) {
-    stream.write_all("END\r\n".as_bytes()).unwrap();
-    stream.flush().unwrap();
+fn send_end(writer: &mut BufWriter<&TcpStream>) {
+    writer.write_all("END\r\n".as_bytes()).unwrap();
+    writer.flush().unwrap();
 }
 
 // Parsing request
@@ -99,14 +101,15 @@ enum Request {
     Unknown,
 }
 
-fn parse_request(stream: &mut TcpStream) -> std::io::Result<Request> {
+fn parse_request(
+    reader: &mut BufReader<&TcpStream>,
+) -> std::io::Result<Request> {
     let now = SystemTime::now();
     let unix_time = now
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs();
 
-    let mut reader = BufReader::new(stream);
     let mut command_line = String::new();
     reader.read_line(&mut command_line).unwrap();
 
@@ -143,38 +146,44 @@ fn parse_request(stream: &mut TcpStream) -> std::io::Result<Request> {
     }
 }
 
-fn handle_request(request: Request, stream: &mut TcpStream, cache: &mut Cache) {
+fn handle_request(
+    request: Request,
+    writer: &mut BufWriter<&TcpStream>,
+    cache: &mut Cache,
+) {
     log_info(&format!("received request: {request:?}"));
     match request {
         Request::Get(get_request) => {
-            handle_get_request(get_request, stream, cache)
+            handle_get_request(get_request, writer, cache)
         }
         Request::Set(set_request) => {
-            handle_set_request(set_request, stream, cache)
+            handle_set_request(set_request, writer, cache)
         }
-        Request::Unknown => handle_unknown_request(stream),
+        Request::Unknown => handle_unknown_request(writer),
     }
     .unwrap();
     log_info("finished handling last request");
 }
 
 fn handle_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     mut cache: Cache,
 ) -> std::io::Result<()> {
+    let mut reader = BufReader::new(&stream);
+    let mut writer = BufWriter::new(&stream);
     let peer_addr = stream.peer_addr().unwrap();
     log_info(&format!("inbound connection from {peer_addr}"));
     loop {
         log_info(&format!("waiting for next request from {peer_addr}"));
-        let request = parse_request(&mut stream);
+        let request = parse_request(&mut reader);
         match request {
             Ok(request) => {
-                handle_request(request, &mut stream, &mut cache);
+                handle_request(request, &mut writer, &mut cache);
             }
             Err(_) => {
                 log_info(&format!("sending error to {peer_addr}"));
-                stream.write_all("ERROR\r\n".as_bytes()).unwrap();
-                stream.flush().unwrap();
+                writer.write_all("ERROR\r\n".as_bytes()).unwrap();
+                writer.flush().unwrap();
                 break;
             }
         }
@@ -201,8 +210,17 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
+fn get_sys_time_in_secs() -> u128 {
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(n) => n.as_micros(),
+        Err(_) => panic!("SystemTime before UNIX EPOCH!"),
+    }
+}
+
 // Utility functions
 fn log_info(str: &str) {
+    let pid = std::process::id();
+    let unix_time_us = get_sys_time_in_secs();
     #[cfg(debug_assertions)]
-    println!("INFO: {str}");
+    println!("Cachr: [{pid}] [{unix_time_us}]: {str}");
 }
